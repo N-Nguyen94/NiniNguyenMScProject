@@ -1,0 +1,138 @@
+#Install appropriate packages
+install.packages('Seurat')
+library(Seurat)
+library(dplyr)
+library(BiocManager)
+#GSE120410
+#Load in data 
+GSE120410.data <- Read10X(data.dir = '~/Desktop/data/GSE120410_raw/GSE120410')
+GSE120410 <- CreateSeuratObject(counts = GSE120410.data, min.cells = 3, min.features = 100, project = "pituitary_scrna")
+
+#Quality control - removal of mitochondrial genes
+mito.genes.GSE120410 <- grep(pattern = "^MT-", x = rownames(GSE120410@assays[["RNA"]]), value = TRUE)
+mito.genes.GSE120410 <- grep(pattern = "^mt-", x = rownames(GSE120410@assays[["RNA"]]), value = TRUE)
+percent.mito.GSE120410 <- Matrix::colSums(GSE120410@assays[["RNA"]][mito.genes.GSE120410, ])/Matrix::colSums(GSE120410@assays[["RNA"]])
+GSE120410$percent.mito.GSE120410 <- percent.mito.GSE120410
+GSE120410 <- AddMetaData(object = GSE120410, metadata = percent.mito.GSE120410, col.name = "percent.mito.GSE120410")
+VlnPlot(object = GSE120410, features = c("nFeature_RNA", "nCount_RNA", "percent.mito.GSE120410"), ncol =3)
+
+#Quality control - filter out reads with and decide threshold for nfeature/ncounts 
+par(mfrow = c(1, 2))
+FeatureScatter(object = GSE120410, feature1 = "nFeature_RNA", feature2 = "nCount_RNA")
+#apply threshold limits to gene counts
+GSE120410 <- subset(x = GSE120410, subset = nFeature_RNA > 200  & nFeature_RNA < 6000) 
+VlnPlot(object = GSE120410, features = c("nFeature_RNA", "nCount_RNA", "percent.mito.GSE120410"), ncol = 3)
+
+#Normalise data and find the highly variable features 
+GSE120410 <- NormalizeData(object = GSE120410, normalization.method = "LogNormalize", scale.factor = 1000)
+GSE120410 <- FindVariableFeatures(object = GSE120410, mean.function = ExpMean, dispersion.function = LogVMR, mean.cutoff = c(0.0125, 3), nfeatures = 1000)
+View(x = HVFInfo(object = GSE120410))
+head(x = HVFInfo(object = GSE120410), 250)
+View(VariableFeatures(GSE120410))
+head(VariableFeatures(GSE120410), 200)
+vf_120410 <- head(VariableFeatures(GSE120410))
+plot_vf_GSE120410 <- VariableFeaturePlot(GSE120410)
+plot_vf_GSE120410 <- LabelPoints(plot = plot_vf_GSE120410, points = vf_120410 ,xnudge = 0, ynudge = 0, repel = TRUE)
+plot_vf_GSE120410
+
+all_genes_120410 <- row.names(GSE120410)
+
+#Scale data and regress variables out such as percent.mito
+GSE120410 <- ScaleData(object = GSE120410, use.umi = TRUE, do.scale = TRUE, do.center = TRUE)
+
+#Run PCA analysis
+GSE120410 <- RunPCA(object = GSE120410, verbose = TRUE)
+
+#Examine and visualise PCA data
+PCAPlot(object = GSE120410, dims = c(1,2))
+PCHeatmap(object = GSE120410, dims = 1:20, cells = 500, balanced = TRUE, nfeatures = 20)
+GSE120410 <- ProjectDim(object = GSE120410, reduction = "pca")
+PCHeatmap(object = GSE120410, dims = 1, cells = 500, balanced = TRUE)
+
+#Jackstraw plot to determine significant PC's
+GSE120410 <- JackStraw(object = GSE120410, num.replicate = 100, dims = 20)
+ScoreJackStraw(object = GSE120410, dims = 1:10, do.plot = TRUE, score.thresh = 1e-05)
+JackStrawPlot(object = GSE120410, reduction = "pca", dims = 1:12)
+ElbowPlot(object = GSE120410, ndims = 20, reduction = "pca")
+
+#Find neighbours and then clusters 
+GSE120410 <- FindNeighbors(object = GSE120410, reduction = "pca", dims = 1:11)
+GSE120410 <- FindClusters(object = GSE120410, resolution = 0.5, algorithm = 1)
+GSE120410 <- RunTSNE(object = GSE120410, dims = 1:11, label = TRUE)
+DimPlot(object = GSE120410, reduction = "tsne", label = TRUE)
+
+#Find cluster markers to define cell types
+#Using known gene markers
+FeaturePlot(object = GSE120410, features = c("Gh", "Prl", "Pomc", "Crh", "Pax7", "Tbx19",  "Fshb", "Lhb", "Tshb"))
+FeaturePlot(object = GSE120410, features = c("Pecam1", "Col1a1", "C1qa", "Sox2", "Col25a1"))
+
+
+#Find cluster markers using function
+# Cluster 0
+cluster0.markers. <- FindMarkers(GSE120410, ident.1 = 0, ident.2 = c(2,3,4,9,12), min.pct = 0.25)
+head(cluster0.markers., n = 5)
+
+#Find all clusters using function
+GSE120410.markers <- FindAllMarkers(GSE120410, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+GSE120410.markers %>%
+  group_by(cluster) %>%
+  top_n(n = 2, wt = avg_log2FC)
+
+
+#Re-naming cluster groups
+new.cluster.ids.pit <- c("Somatotropes", "Lactotropes", "Lactotropes", "Somatotropes", "Somatotropes", "Lactotropes", 
+                     "Somatotropes", "Gonadotropes", "Corticotropes", "Somatotropes", "Adult stem cells", "Endothelia", "Somatotropes", 
+                     "Melanotropes", "Collagen", "White blood cells", "Collagen")
+names(new.cluster.ids.pit) <- levels(GSE120410)
+GSE120410 <- RenameIdents(GSE120410, new.cluster.ids.pit)
+DimPlot(GSE120410, reduction = "tsne", label = TRUE, pt.size = 0.5) + NoLegend()
+
+#Feature expression of genes of interests
+#Expression MRAPs and MCRs
+VlnPlot(GSE120410, features = c("Mrap", "Mrap2", "Mc1r", "Mc2r", "Mc3r", "Mc4r", "Mc5r"))
+FeaturePlot(GSE120410, features = c("Mrap", "Mrap2", "Mc1r", "Mc2r", "Mc3r", "Mc4r", "Mc5r"))
+
+#MRAP2 and GPCRs of interest
+VlnPlot(GSE120410, features = c("Mrap2", "Ghrhr", "Ghsr", "Prokr1", "Hcrtr1", "Hcrtr2", "Cnr1", "Cnr2", "Ghsr1a"))
+FeaturePlot(GSE120410, features = c("Mrap2", "Ghsr1a", "Ghsr", "Prokr1", "Prokr2", "Hcrtr1", "Hcrtr2", "Cnr1", "Cnr2"))
+
+#Identify novel expression of GPCRs with MRAP2
+FeaturePlot(GSE120410, features = c("Mrap2", "Htr1a", "Htr1b", "Htr2a", "Htr2b"))
+FeaturePlot(GSE120410, features = c("Mrap2", "Chrm1", "Chrm2", "Chrm3", "Chrm4", "Chrm5"))
+FeaturePlot(GSE120410, features = c("Mrap2", "Gpr3", "Gpr18", "Gpr55", "Gpr119", "Gpr139", "Gpr183"))
+FeaturePlot(GSE120410, features = c("Mrap2", "Ghrhr"))
+FeaturePlot(GSE120410, features = c("Mrap2", "Adora1", "Adora2a"))
+FeaturePlot(GSE120410, features = c("Mrap2", "Mchr1", "Mtnr1a", "Mtnr1b"))
+FeaturePlot(GSE120410, features = c("Mrap2", "Oprd1","Oprl1", "Oprk1", "Oprm1"))
+FeaturePlot(GSE120410, features = c("Mrap2", "Drd1", "Drd2"))
+FeaturePlot(GSE120410, features = c("Mrap2", "Sstr1", "Sstr2", "Sstr3", "Sstr4", "Sstr5"))
+FeaturePlot(GSE120410, features = c("Mrap2", "Rxfp1", "Rxfp2"))
+FeaturePlot(GSE120410, features = c("Mrap2", "Avpr1a", "Oxtr"))
+
+
+#Coexpression
+FeaturePlot(GSE120410, features = c("Mrap2", "Mchr1"), cols = c("blue", "red"), blend = TRUE)
+VlnPlot(GSE120410, features = c("Mrap2", "Mchr1"))
+VlnPlot(GSE120410, features = c("Mrap2", "Adora1"))
+VlnPlot(GSE120410, features = c("Mrap2", "Ghrhr"))
+
+#Calculate co-expression values 
+sum(GetAssayData(object = GSE120410, slot = "data")["Mrap2",]>0)
+sum(GetAssayData(object = GSE120410, slot = "data")["Ghrhr",]>0)
+sum(GetAssayData(object = GSE120410, slot = "data")["Mrap2",]>0 & GetAssayData(GSE120410, slot = "data")["Ghrhr",]>0)
+sum(GetAssayData(object = GSE120410, slot = "data")["Mrap2",]>0)/nrow(GSE120410@meta.data)
+sum(GetAssayData(object = GSE120410, slot = "data")["Ghrhr",]>0)/nrow(GSE120410@meta.data)
+
+#Locate and visualise cells and find cell types
+Mrap2_Ghrhr_Cells <-(WhichCells(GSE120410, expression = Mrap2>0 & Ghrhr>0))
+DimPlot(object = GSE120410, cells.highlight = Mrap2_Ghrhr_Cells, cols.highlight = "red", cols = "gray", order = TRUE, split.by = "ident")
+
+#Change legend titles (not working)
+DimPlot(GSE120410, cells.highlight = Mrap2_Ghrhr_Cells + scale_colour_manual(labels = c("No expression", "Mrap2+ & Ghrhr+")), values = c("grey", "red")) +
+  labs(color = "legend title")
+
+#Heatmap of top 5 genes for each cluster
+GSE120410.markers %>%
+  group_by(cluster) %>%
+  top_n(n = 5, wt = avg_log2FC) -> top5
+DoHeatmap(GSE120410, features = VariableFeatures(GSE120410), group.by = "ident")
