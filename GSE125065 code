@@ -1,0 +1,139 @@
+#Install appropriate packages
+install.packages('Seurat')
+library(Seurat)
+library(dplyr)
+library(BiocManager)
+#GSE125065
+
+#load in data
+GSE125065.data <- Read10X(data.dir = "~/Desktop/data/GSE125065_RAW/")
+#Examine memory between dense and sparse matrices
+dense.size <- object.size(x = as.matrix(x = GSE125065.data))
+dense.size 
+sparse.size <- object.size(x = GSE125065.data) 
+sparse.size
+dense.size/sparse.size
+GSE125065 <- CreateSeuratObject(counts = GSE125065.data, min.cells = 3, min.features = 100, project = "hypothalamus_scrna")
+
+#Quality control - calculate % of mitochondrial genes
+mito.genes.GSE125065 <- grep(pattern = "^MT-", x = rownames(GSE125065@assays[["RNA"]]), value = TRUE)
+mito.genes.GSE125065 <- grep(pattern = "^mt-", x = rownames(GSE125065@assays[["RNA"]]), value = TRUE)
+percent.mito.GSE125065 <- Matrix::colSums(GSE125065@assays[["RNA"]][mito.genes.GSE125065, ])/Matrix::colSums(GSE125065@assays[["RNA"]])
+GSE125065$percent.mito.GSE125065 <- percent.mito.GSE125065
+GSE125065 <- AddMetaData(object = GSE125065, metadata = percent.mito.GSE125065, col.name = "percent.mito.GSE125065")
+VlnPlot(object = GSE125065, features = c("nFeature_RNA", "nCount_RNA", "percent.mito.GSE125065"), ncol =3)
+
+#plot counts for features and UMI to estimate cut-off points
+par(mfrow = c(1, 2))
+FeatureScatter(object = GSE125065, feature1 = "nFeature_RNA", feature2 = "nCount_RNA")
+
+#Apply threshold limits to gene counts
+GSE125065 <- subset(x = GSE125065, subset = nFeature_RNA > 500 & nFeature_RNA < 6000 & percent.mito.GSE125065 < 1) 
+FeatureScatter(object = GSE125065, feature1 = "nFeature_RNA", feature2 = "nCount_RNA")
+
+#Normalise data and find the highly variable features 
+GSE125065 <- NormalizeData(object = GSE125065, normalization.method = "LogNormalize", scale.factor = 1000)
+GSE125065 <- FindVariableFeatures(object = GSE125065, mean.function = ExpMean, dispersion.function = LogVMR, mean.cutoff = c(0.0125, 3), nfeatures = 1000)
+head(x = HVFInfo(object = GSE125065))
+View(HVFInfo(GSE125065))
+head(HVFInfo(GSE125065), 250)
+
+#Finding and plotting variable features
+GSE125065 <- FindVariableFeatures(GSE125065, selection.method = "vst")
+GSE125065 <- FindVariableFeatures(GSE125065, selection.method = "mvp")
+vf1_125065 <- head(VariableFeatures(GSE125065))
+plot_vf <- VariableFeaturePlot(GSE125065)
+plot_vf <- LabelPoints(plot = plot_vf, points = vf1_125065 ,xnudge = 0, ynudge = 0, repel = TRUE)
+plot_vf
+head(x = vf1_125065(object = GSM125065))
+all.genes065 <- rownames(GSE125065)
+HVFInfo(GSE125065) 
+
+#Scale data and regress variables out such as percent.mito
+GSE125065 <- ScaleData(object = GSE125065, use.umi = TRUE, do.scale = TRUE, do.center = TRUE)
+
+#Run PCA analysis
+GSE125065 <- RunPCA(object = GSE125065, verbose = TRUE)
+
+#Examine and visualise PCA data
+PCAPlot(object = GSE125065, dims = c(1,2))
+PCHeatmap(object = GSE125065, dims = 1:20, cells = 500, balanced = TRUE, nfeatures = 20)
+GSE125065 <- ProjectDim(object = GSE125065, reduction = "pca")
+PCHeatmap(object = GSE125065, dims = 1, cells = 500, balanced = TRUE)
+
+#Jackstraw plot to determine significant PC's
+GSE125065 <- JackStraw(object = GSE125065, num.replicate = 100, dims = 17)
+ScoreJackStraw(object = GSE125065, dims = 1:20, do.plot = TRUE, score.thresh = 1e-05)
+JackStrawPlot(object = GSE125065, reduction = "pca", dims = 1:20)
+ElbowPlot(object = GSE125065, ndims = 20, reduction = "pca")
+
+#Find neighbours and then clusters 
+GSE125065 <- FindNeighbors(object = GSE125065, reduction = "pca", dims = 1:15)
+GSE125065 <- FindClusters(object = GSE125065, resolution = 0.5, algorithm = 1)
+GSE125065 <- RunTSNE(object = GSE125065, dims = 1:15, label = TRUE)
+DimPlot(object = GSE125065, reduction = "tsne", label = TRUE)
+
+#Find cluster markers to define cell types
+#Known gene markers
+FeaturePlot(object = GSE125065, features = c("Slc32a1", "Slc17a6"))
+FeaturePlot(object = GSE125065, features = c("Slc32a1", "Slc17a6", "Snap25", "Syt1", "Syp", "Tubb3", "Elavl2"))
+FeaturePlot(object = GSE125065, features = c("Agt", "Sox9", "Cldn5", "C1qa"))
+FeaturePlot(object = GSE125065, features = c("Gad1", "Gad2", "Pmch", "Nrgn", "Gda", "Zic1", "Hcrt", "Ebf3", "Gpr101", "Otp", "Trh", "Cbln2"))
+FeaturePlot(object = GSE125065, features = c("Gal", "Dlk1", "Npy", "Npw", "Cartpt", "Meis2", "Calb2", "Sst", "Col25a1", "Tac2", "Serpini1", "Lhx6"))
+
+#Remove clusters that dont exhibit known gene markers
+sub_GSE125065 <- subset(GSE125065, idents = c(3, 6, 7, 8, 12, 14), invert = TRUE)
+DimPlot(sub_GSE125065, reduction = "tsne", label = TRUE)
+
+#Rename cluster identities
+new.cluster.ids.hyp <- c("GABAergic", "Glutamatergic", "GABAergic", "Astrocytes", "Endothelia", "Glutamatergic", "Macrophages", "Glutamatergic", "Unassigned neurons")
+names(new.cluster.ids.hyp) <- levels(sub_GSE125065)
+sub_GSE125065 <- RenameIdents(sub_GSE125065, new.cluster.ids.hyp)
+DimPlot(sub_GSE125065, reduction = "tsne", label = TRUE) + NoLegend()
+
+
+#Finding cluster markers/differentially expressed genes for all cluster groups
+all.markers.GSE125065 <- FindAllMarkers(object = GSE125065, min.pct = 0.25, min.diff.pct = 0.25, only.pos = TRUE)
+View(all.markers.GSE125065)
+
+#View gene expression
+FeaturePlot(object = sub_GSE125065, features = c("Mrap", "Mrap2", "Mc1r", "Mc2r", "Mc3r", "Mc4r", "Mc5r"))
+FeaturePlot(object = sub_GSE125065, features = c("Mrap2", "Ghsr", "Prokr1", "Prokr2",  "Hcrtr1", "Hcrtr2", "Cnr1", "Cnr2", "Ghsr1a"))
+
+
+#Identifying known GPCR expression 
+FeaturePlot(GSE125065, features = c("Mrap", "Mrap2", "Mc1r", "Mc2r", "Mc3r", "Mc4r", "Mc5r"))
+FeaturePlot(GSE125065, features = c("Mrap", "Mrap2", "Ghsr", "Cnr1", "Hcrtr1", "Hctr2", "Prokr1", "Prokr2"))
+VlnPlot( sub_GSE125065, features = c("Mrap2", "Ghsr", "Prokr1", "Prokr2",  "Hcrtr1", "Hcrtr2", "Cnr1", "Cnr2", "Ghsr1a"), stack = TRUE)
+
+
+#Identifying novel GPCR expression
+FeaturePlot(GSE125065, features = c("Mrap2", "Htr1a", "Htr1b", "Htr2a", "Htr2b"))
+FeaturePlot(GSE125065, features = c("Mrap2", "Chrm1", "Chrm2", "Chrm3", "Chrm4", "Chrm5"))
+FeaturePlot(GSE125065, features = c("Mrap2", "Gpr3", "Gpr18", "Gpr55", "Gpr119", "Gpr139", "Gpr183"))
+FeaturePlot(GSE125065, features = c("Mrap2", "Ghrhr"))
+FeaturePlot(GSE125065, features = c("Mrap2", "Adora1", "Adora2a"))
+FeaturePlot(GSE125065, features = c("Mrap2", "Mchr1", "Mtnr1a", "Mtnr1b"))
+FeaturePlot(GSE125065, features = c("Oprd1","Oprl1", "Oprk1", "Oprm1"))
+FeaturePlot(GSE125065, features = c("Mrap2", "Drd1", "Drd2"))
+FeaturePlot(GSE125065, features = c("Mrap2", "Sstr1", "Sstr2", "Sstr3", "Sstr4", "Sstr5"))
+FeaturePlot(GSE125065, features = c("Mrap2", "Rxfp1", "Rxfp2"))
+FeaturePlot(GSE125065, features = c("Mrap2", "Avpr1a", "Oxtr"))
+
+
+#Gene counts
+sum(GetAssayData(object = GSE125065, slot = "data")["Mrap2",]>0)
+sum(GetAssayData(object = sub_GSE125065, slot = "data")["Mrap2",]>0)
+sum(GetAssayData(object = sub_GSE125065, slot = "data")["Rxfp2",]>0)
+sum(GetAssayData(object = sub_GSE125065, slot = "data")["Mrap2",]>0 & GetAssayData(sub_GSE125065, slot = "data")["Rxfp2",]>0)
+
+#Fraction of co-expression in dataset
+sum(GetAssayData(object = GSE125065, slot = "data")["Mrap2",]>0)/nrow(GSE125065@meta.data)
+sum(GetAssayData(object = GSE125065, slot = "data")["Cnr1",]>0)/nrow(GSE125065@meta.data)
+
+#Visualise co-expression
+Mrap2_Cnr1_coexp <- WhichCells(object = sub_GSE125065, expression = Mrap2 > 0 & Cnr1 > 0)
+DimPlot(object = sub_GSE125065, cells.highlight = Mrap2_Cnr1_coexp, cols.highlight = "red", cols = "gray", order = TRUE, split.by = "ident")
+
+Mrap2_Oprl1_cells <- WhichCells(object = sub_GSE125065, expression = Mrap2 >0 & Oprl1 >0)
+DimPlot(object = sub_GSE125065, cells.highlight = Mrap2_Oprl1_cells, cols.highlight = "red", cols = "gray", order = TRUE, split.by = "ident")
